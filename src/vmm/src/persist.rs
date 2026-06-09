@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
-use userfaultfd::{FeatureFlags, Uffd, UffdBuilder};
+use userfaultfd::{FeatureFlags, RegisterMode, Uffd, UffdBuilder};
 use vmm_sys_util::sock_ctrl_msg::ScmSocket;
 
 #[cfg(target_arch = "aarch64")]
@@ -455,6 +455,12 @@ pub fn restore_from_snapshot(
                 )
                 .into());
             }
+            if params.uffd_base_file.is_some() {
+                return Err(RestoreFromSnapshotGuestMemoryError::Uffd(
+                    GuestMemoryFromUffdError::BaseFileRequiresUffdBackend,
+                )
+                .into());
+            }
             (
                 guest_memory_from_file(mem_backend_path, mem_state, track_dirty_pages, params.shared)
                     .map_err(RestoreFromSnapshotGuestMemoryError::File)?,
@@ -466,6 +472,7 @@ pub fn restore_from_snapshot(
             mem_state,
             track_dirty_pages,
             vm_resources.machine_config.huge_pages,
+            params.uffd_base_file.as_deref(),
         )
         .map_err(RestoreFromSnapshotGuestMemoryError::Uffd)?,
     };
@@ -545,6 +552,14 @@ pub enum GuestMemoryFromUffdError {
     Connect(#[from] std::io::Error),
     /// Failed to sends file descriptor: {0}
     Send(#[from] vmm_sys_util::errno::Error),
+    /// `uffd_base_file` is only supported with the Uffd memory backend.
+    BaseFileRequiresUffdBackend,
+    /// `uffd_base_file` is not supported with hugetlbfs-backed snapshots (UFFD minor faults are shmem-only here).
+    BaseFileHugetlbfs,
+    /// Failed to open uffd_base_file: {0}
+    OpenBaseFile(std::io::Error),
+    /// Failed to map guest memory from uffd_base_file: {0}
+    BaseFileMap(MemoryError),
 }
 
 fn guest_memory_from_uffd(
@@ -552,9 +567,10 @@ fn guest_memory_from_uffd(
     mem_state: &GuestMemoryState,
     track_dirty_pages: bool,
     huge_pages: HugePageConfig,
+    base_file: Option<&Path>,
 ) -> Result<(Vec<GuestRegionMmap>, Option<Uffd>), GuestMemoryFromUffdError> {
     let (guest_memory, backend_mappings) =
-        create_guest_memory(mem_state, track_dirty_pages, huge_pages)?;
+        create_guest_memory(mem_state, track_dirty_pages, huge_pages, base_file)?;
 
     let mut uffd_builder = UffdBuilder::new();
 
@@ -571,8 +587,17 @@ fn guest_memory_from_uffd(
         .create()
         .map_err(GuestMemoryFromUffdError::Create)?;
 
+    // ADR 0045 substrate v2b: with a base file backing, register MISSING|MINOR
+    // so the handler can resolve base-identical pages with UFFDIO_CONTINUE
+    // (shared page cache) and divergent pages with UFFDIO_COPY (private).
+    // Without it, the stock MISSING-only registration is byte-identical.
+    let register_mode = if base_file.is_some() {
+        RegisterMode::MISSING | RegisterMode::MINOR
+    } else {
+        RegisterMode::MISSING
+    };
     for mem_region in guest_memory.iter() {
-        uffd.register(mem_region.as_ptr().cast(), mem_region.size() as _)
+        uffd.register_with_mode(mem_region.as_ptr().cast(), mem_region.size() as _, register_mode)
             .map_err(GuestMemoryFromUffdError::Register)?;
     }
 
@@ -585,8 +610,22 @@ fn create_guest_memory(
     mem_state: &GuestMemoryState,
     track_dirty_pages: bool,
     huge_pages: HugePageConfig,
+    base_file: Option<&Path>,
 ) -> Result<(Vec<GuestRegionMmap>, Vec<GuestRegionUffdMapping>), GuestMemoryFromUffdError> {
-    let guest_memory = memory::anonymous(mem_state.regions(), track_dirty_pages, huge_pages)?;
+    let guest_memory = match base_file {
+        Some(path) => {
+            // ADR 0045 substrate v2b: MAP_PRIVATE of the shared base shm file.
+            // Read-only fd is enough — guest writes COW to private anon pages;
+            // only the external handler ever writes the base (by path).
+            if huge_pages.is_hugetlbfs() {
+                return Err(GuestMemoryFromUffdError::BaseFileHugetlbfs);
+            }
+            let file = std::fs::File::open(path).map_err(GuestMemoryFromUffdError::OpenBaseFile)?;
+            memory::snapshot_file(file, mem_state.regions(), track_dirty_pages, /* shared */ false)
+                .map_err(GuestMemoryFromUffdError::BaseFileMap)?
+        }
+        None => memory::anonymous(mem_state.regions(), track_dirty_pages, huge_pages)?,
+    };
     let mut backend_mappings = Vec::with_capacity(guest_memory.len());
     let mut offset = 0;
     for mem_region in guest_memory.iter() {
@@ -791,12 +830,68 @@ mod tests {
         };
 
         let (_, uffd_regions) =
-            create_guest_memory(&mem_state, false, HugePageConfig::None).unwrap();
+            create_guest_memory(&mem_state, false, HugePageConfig::None, None).unwrap();
 
         assert_eq!(uffd_regions.len(), 1);
         assert_eq!(uffd_regions[0].size, 0x20000);
         assert_eq!(uffd_regions[0].offset, 0);
         assert_eq!(uffd_regions[0].page_size, HugePageConfig::None.page_size());
+    }
+
+    /// ADR 0045 substrate v2b: guest memory created over a base file maps it
+    /// MAP_PRIVATE — content reads through from the file (page-cache shared),
+    /// guest-side writes COW privately and never reach the file, and the
+    /// backend mappings carry the same sequential file offsets as the
+    /// anonymous path.
+    #[test]
+    fn test_create_guest_memory_with_base_file() {
+        use std::io::Write;
+
+        let region_size: usize = 0x20000;
+        let base = TempFile::new().unwrap();
+        let pattern: Vec<u8> = (0..region_size).map(|i| (i % 251) as u8).collect();
+        base.as_file().write_all(&pattern).unwrap();
+
+        let mem_state = GuestMemoryState {
+            regions: vec![GuestMemoryRegionState {
+                base_address: 0,
+                size: region_size,
+                region_type: GuestRegionType::Dram,
+                plugged: vec![true],
+            }],
+        };
+
+        let (guest_memory, uffd_regions) =
+            create_guest_memory(&mem_state, false, HugePageConfig::None, Some(base.as_path()))
+                .unwrap();
+        assert_eq!(uffd_regions.len(), 1);
+        assert_eq!(uffd_regions[0].size, region_size);
+        assert_eq!(uffd_regions[0].offset, 0);
+
+        // Content reads through from the base file (no uffd registered yet, so
+        // plain page-cache faults serve these).
+        let ptr = guest_memory[0].as_ptr();
+        // SAFETY: ptr covers region_size bytes of the mapping we just created.
+        let view = unsafe { std::slice::from_raw_parts_mut(ptr, region_size) };
+        assert_eq!(&view[..64], &pattern[..64]);
+        assert_eq!(view[0x10000], pattern[0x10000]);
+
+        // A write COWs privately: visible through the mapping, absent from the file.
+        view[0x10000] = 0xEE;
+        assert_eq!(view[0x10000], 0xEE);
+        let mut on_disk = vec![0u8; 4];
+        std::os::unix::fs::FileExt::read_exact_at(base.as_file(), &mut on_disk, 0x10000).unwrap();
+        assert_eq!(on_disk[0], pattern[0x10000], "guest write leaked into the base file");
+
+        // Hugetlbfs + base file is rejected.
+        let err = create_guest_memory(
+            &mem_state,
+            false,
+            HugePageConfig::Hugetlbfs2M,
+            Some(base.as_path()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, GuestMemoryFromUffdError::BaseFileHugetlbfs));
     }
 
     #[test]

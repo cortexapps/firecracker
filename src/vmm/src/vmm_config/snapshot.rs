@@ -97,6 +97,16 @@ pub struct LoadSnapshotParams {
     /// memfile — the page-readable source for ADR 0045 post-copy. No effect for
     /// the UFFD backend. Defaults to false (today's `MAP_PRIVATE` behavior).
     pub shared: bool,
+    /// ADR 0045 unified memory substrate (v2b). When set with the Uffd memory
+    /// backend, guest memory is created as `MAP_PRIVATE` of this file (a
+    /// tmpfs/shmem per-template base) instead of anonymous, and the UFFD
+    /// registration uses `MISSING | MINOR` instead of MISSING-only. The
+    /// external handler then resolves base-identical pages with
+    /// `UFFDIO_CONTINUE` (shared page cache across same-template microVMs)
+    /// and session-divergent pages with `UFFDIO_COPY` (private); guest writes
+    /// COW natively. Invalid with the File backend. Requires a kernel with
+    /// UFFD minor faults on shmem (>= 5.13).
+    pub uffd_base_file: Option<PathBuf>,
 }
 
 /// Stores the configuration for loading a snapshot that is provided by the user.
@@ -136,6 +146,11 @@ pub struct LoadSnapshotConfig {
     /// source). Top-level (not inside `mem_backend`). Defaults to false.
     #[serde(default)]
     pub shared: bool,
+    /// ADR 0045 substrate v2b: back Uffd-restored guest memory `MAP_PRIVATE`
+    /// by this shmem base file and register UFFD `MISSING | MINOR`. Top-level
+    /// (not inside `mem_backend`, which is `deny_unknown_fields`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uffd_base_file: Option<PathBuf>,
 }
 
 /// Stores the configuration used for managing snapshot memory.
