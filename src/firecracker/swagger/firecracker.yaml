@@ -1621,9 +1621,13 @@ definitions:
         enum:
           - Full
           - Diff
+          - Msync
+          - MsyncAndState
         description:
           Type of snapshot to create. It is optional and by default, a full
-          snapshot is created.
+          snapshot is created. `Msync` flushes a MAP_SHARED file-backed guest
+          memory to its backing memfile via msync(MS_SYNC) without writing the
+          machine state; `MsyncAndState` also writes the state file.
 
   NetworkOverride:
     type: object
@@ -1710,6 +1714,13 @@ definitions:
           elapsed since the snapshot was taken. When false (default), kvmclock resumes
           from where it was at snapshot time. This option may be extended to other clock
           sources and CPU architectures in the future."
+      shared:
+        type: boolean
+        description:
+          When set to true and the memory is restored from a file, map the guest
+          memory MAP_SHARED so guest writes flush back to the backing memfile (the
+          page-readable source for post-copy live migration). No effect for the UFFD
+          backend. Optional; defaults to false (MAP_PRIVATE).
 
 
   TokenBucket:
