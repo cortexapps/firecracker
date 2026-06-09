@@ -34,7 +34,9 @@ use crate::utils::u64_to_usize;
 use crate::vmm_config::boot_source::BootSourceConfig;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{HugePageConfig, MachineConfigError, MachineConfigUpdate};
-use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, MemBackendType};
+use crate::vmm_config::snapshot::{
+    CreateSnapshotParams, LoadSnapshotParams, MemBackendType, SnapshotType,
+};
 use crate::vstate::kvm::KvmState;
 use crate::vstate::memory::{
     self, GuestMemoryState, GuestRegionMmap, GuestRegionType, MemoryError,
@@ -168,11 +170,16 @@ pub fn create_snapshot(
     vm_info: &VmInfo,
     params: &CreateSnapshotParams,
 ) -> Result<(), CreateSnapshotError> {
-    let microvm_state = vmm
-        .save_state(vm_info)
-        .map_err(CreateSnapshotError::MicrovmState)?;
+    // `Msync` is a memory-only off-pause flush: the machine state file is not
+    // written (the durable state rides a separate `MsyncAndState`/`Full` capture).
+    // Every other type writes the state file as usual.
+    if params.snapshot_type != SnapshotType::Msync {
+        let microvm_state = vmm
+            .save_state(vm_info)
+            .map_err(CreateSnapshotError::MicrovmState)?;
 
-    snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
+        snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
+    }
 
     let kvm_vm = vmm.vm.as_kvm().ok_or_else(|| {
         CreateSnapshotError::MicrovmState(MicrovmStateError::NotAllowed(
@@ -449,7 +456,7 @@ pub fn restore_from_snapshot(
                 .into());
             }
             (
-                guest_memory_from_file(mem_backend_path, mem_state, track_dirty_pages)
+                guest_memory_from_file(mem_backend_path, mem_state, track_dirty_pages, params.shared)
                     .map_err(RestoreFromSnapshotGuestMemoryError::File)?,
                 None,
             )
@@ -512,9 +519,16 @@ fn guest_memory_from_file(
     mem_file_path: &Path,
     mem_state: &GuestMemoryState,
     track_dirty_pages: bool,
+    shared: bool,
 ) -> Result<Vec<GuestRegionMmap>, GuestMemoryFromFileError> {
-    let mem_file = File::open(mem_file_path)?;
-    let guest_mem = memory::snapshot_file(mem_file, mem_state.regions(), track_dirty_pages)?;
+    // A `MAP_SHARED` mapping that flushes guest writes back needs the fd opened
+    // for writing; the default `MAP_PRIVATE` restore only reads.
+    let mem_file = OpenOptions::new()
+        .read(true)
+        .write(shared)
+        .open(mem_file_path)?;
+    let guest_mem =
+        memory::snapshot_file(mem_file, mem_state.regions(), track_dirty_pages, shared)?;
     Ok(guest_mem)
 }
 

@@ -159,6 +159,8 @@ impl ApiServer {
                     &METRICS.latencies_us.diff_create_snapshot,
                     "create diff snapshot",
                 )),
+                // ADR 0045 off-pause flush — no dedicated latency metric.
+                SnapshotType::Msync | SnapshotType::MsyncAndState => None,
             },
             VmmAction::LoadSnapshot(_) => {
                 Some((&METRICS.latencies_us.load_snapshot, "load snapshot"))

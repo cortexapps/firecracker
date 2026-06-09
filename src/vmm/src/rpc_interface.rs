@@ -952,6 +952,15 @@ impl RuntimeApiController {
                     elapsed_time_us
                 );
             }
+            // ADR 0045 off-pause flush. No dedicated latency metric (reuses the
+            // monotonic clock for the log line) to keep the fork surface minimal.
+            SnapshotType::Msync | SnapshotType::MsyncAndState => {
+                let elapsed_time_us = get_time_us(ClockType::Monotonic) - create_start_us;
+                info!(
+                    "'create msync snapshot' VMM action took {} us.",
+                    elapsed_time_us
+                );
+            }
         }
         Ok(VmmData::Empty)
     }
@@ -1331,6 +1340,7 @@ mod tests {
                 network_overrides: vec![],
                 vsock_override: None,
                 clock_realtime: false,
+                shared: false,
             },
         )));
         check_unsupported(runtime_request(VmmAction::SetEntropyDevice(

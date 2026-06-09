@@ -18,6 +18,13 @@ pub enum SnapshotType {
     /// Full snapshot.
     #[default]
     Full,
+    /// Memory-only flush of a `MAP_SHARED` file-backed guest memory to its backing
+    /// memfile via `msync(MS_SYNC)`. No machine state is written. The off-pause
+    /// continuous-flush primitive for ADR 0045 live teleport.
+    Msync,
+    /// Like [`SnapshotType::Msync`], but the machine state file is also written —
+    /// an `msync` memory flush paired with a normal `state` file.
+    MsyncAndState,
 }
 
 /// Specifies the method through which guest memory will get populated when
@@ -85,6 +92,11 @@ pub struct LoadSnapshotParams {
     /// advancing kvmclock by the wall-clock time elapsed since the snapshot was taken. When false
     /// (default), kvmclock resumes from where it was at snapshot time.
     pub clock_realtime: bool,
+    /// When set and the memory is restored from a file (`MemBackendType::File`),
+    /// map the guest memory `MAP_SHARED` so guest writes flush back to the backing
+    /// memfile — the page-readable source for ADR 0045 post-copy. No effect for
+    /// the UFFD backend. Defaults to false (today's `MAP_PRIVATE` behavior).
+    pub shared: bool,
 }
 
 /// Stores the configuration for loading a snapshot that is provided by the user.
@@ -120,6 +132,10 @@ pub struct LoadSnapshotConfig {
     /// [x86_64 only] When set to true, passes `KVM_CLOCK_REALTIME` to `KVM_SET_CLOCK` on restore.
     #[serde(default)]
     pub clock_realtime: bool,
+    /// Whether to map file-backed guest memory `MAP_SHARED` (ADR 0045 post-copy
+    /// source). Top-level (not inside `mem_backend`). Defaults to false.
+    #[serde(default)]
+    pub shared: bool,
 }
 
 /// Stores the configuration used for managing snapshot memory.
