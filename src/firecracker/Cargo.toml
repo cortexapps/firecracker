@@ -42,7 +42,7 @@ serde_json = "1.0.150"
 [dev-dependencies]
 cargo_toml = "0.22.3"
 libc = "0.2.186"
-regex = { version = "1.12.3", default-features = false, features = [
+regex = { version = "1.12.4", default-features = false, features = [
   "std",
   "unicode-perl",
 ] }
