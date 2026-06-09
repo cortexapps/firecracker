@@ -165,11 +165,16 @@ pub fn create_snapshot(
     vm_info: &VmInfo,
     params: &CreateSnapshotParams,
 ) -> Result<(), CreateSnapshotError> {
-    let microvm_state = vmm
-        .save_state(vm_info)
-        .map_err(CreateSnapshotError::MicrovmState)?;
+    // `Msync` is a memory-only off-pause flush: the machine state file is not
+    // written (the durable state rides a separate `MsyncAndState`/`Full` capture).
+    // Every other type writes the state file as usual.
+    if params.snapshot_type != SnapshotType::Msync {
+        let microvm_state = vmm
+            .save_state(vm_info)
+            .map_err(CreateSnapshotError::MicrovmState)?;
 
-    snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
+        snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
+    }
 
     snapshot_memory_to_file(vmm, &params.mem_file_path, params.snapshot_type)?;
 
@@ -212,6 +217,16 @@ fn snapshot_memory_to_file(
     snapshot_type: SnapshotType,
 ) -> Result<(), CreateSnapshotError> {
     use self::CreateSnapshotError::*;
+
+    // `Msync`/`MsyncAndState`: the guest memory is mmap'd `MAP_SHARED` on its own
+    // backing memfile, so "saving" memory is an in-place `msync(MS_SYNC)` of the
+    // regions — not a dump to a separate `mem_file_path` (which is unused here).
+    if matches!(
+        snapshot_type,
+        SnapshotType::Msync | SnapshotType::MsyncAndState
+    ) {
+        return vmm.guest_memory().msync().map_err(Memory);
+    }
 
     // Need to check this here, as we create the file in the line below
     let file_existed = mem_file_path.exists();
@@ -266,6 +281,8 @@ fn snapshot_memory_to_file(
 
             dump_res
         }
+        // Handled by the early return above (in-place `msync`, no file dump).
+        SnapshotType::Msync | SnapshotType::MsyncAndState => unreachable!(),
     }?;
     // We need to mark queues as dirty again for all activated devices. The reason we
     // do it here is because we don't mark pages as dirty during runtime
@@ -451,6 +468,7 @@ pub fn restore_from_snapshot(
                 mem_state,
                 track_dirty_pages,
                 vm_resources.vm_config.huge_pages,
+                params.shared,
             )
             .map_err(RestoreFromSnapshotGuestMemoryError::File)?,
             None,
@@ -517,10 +535,21 @@ fn guest_memory_from_file(
     mem_state: &GuestMemoryState,
     track_dirty_pages: bool,
     huge_pages: HugePageConfig,
+    shared: bool,
 ) -> Result<GuestMemoryMmap, GuestMemoryFromFileError> {
-    let mem_file = File::open(mem_file_path)?;
-    let guest_mem =
-        GuestMemoryMmap::from_state(Some(&mem_file), mem_state, track_dirty_pages, huge_pages)?;
+    // A `MAP_SHARED` mapping that flushes guest writes back needs the fd opened
+    // for writing; the default `MAP_PRIVATE` restore only reads.
+    let mem_file = OpenOptions::new()
+        .read(true)
+        .write(shared)
+        .open(mem_file_path)?;
+    let guest_mem = GuestMemoryMmap::from_state(
+        Some(&mem_file),
+        mem_state,
+        track_dirty_pages,
+        huge_pages,
+        shared,
+    )?;
     Ok(guest_mem)
 }
 
@@ -579,7 +608,9 @@ fn create_guest_memory(
     track_dirty_pages: bool,
     huge_pages: HugePageConfig,
 ) -> Result<(GuestMemoryMmap, Vec<GuestRegionUffdMapping>), GuestMemoryFromUffdError> {
-    let guest_memory = GuestMemoryMmap::from_state(None, mem_state, track_dirty_pages, huge_pages)?;
+    // UFFD memory is anonymous (served by the handler), so `shared` does not apply.
+    let guest_memory =
+        GuestMemoryMmap::from_state(None, mem_state, track_dirty_pages, huge_pages, false)?;
     let mut backend_mappings = Vec::with_capacity(guest_memory.num_regions());
     for (mem_region, state_region) in guest_memory.iter().zip(mem_state.regions.iter()) {
         backend_mappings.push(GuestRegionUffdMapping {

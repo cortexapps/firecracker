@@ -1206,9 +1206,13 @@ definitions:
         enum:
           - Full
           - Diff
+          - Msync
+          - MsyncAndState
         description:
           Type of snapshot to create. It is optional and by default, a full
-          snapshot is created.
+          snapshot is created. `Msync` flushes a MAP_SHARED file-backed guest
+          memory to its backing memfile via msync(MS_SYNC) without writing the
+          machine state; `MsyncAndState` also writes the state file.
 
   SnapshotLoadParams:
     type: object
@@ -1241,6 +1245,13 @@ definitions:
         type: boolean
         description:
           When set to true, the vm is also resumed if the snapshot load is successful.
+      shared:
+        type: boolean
+        description:
+          When set to true and the memory is restored from a file, map the guest
+          memory MAP_SHARED so guest writes flush back to the backing memfile (the
+          page-readable source for post-copy live migration). No effect for the UFFD
+          backend. Optional; defaults to false (MAP_PRIVATE).
 
   TokenBucket:
     type: object
