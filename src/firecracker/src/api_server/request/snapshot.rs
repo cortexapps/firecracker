@@ -113,6 +113,7 @@ fn parse_put_snapshot_load(body: &Body) -> Result<ParsedRequest, RequestError> {
         vsock_override: snapshot_config.vsock_override,
         clock_realtime: snapshot_config.clock_realtime,
         shared: snapshot_config.shared,
+        uffd_base_file: snapshot_config.uffd_base_file,
     };
 
     // Construct the `ParsedRequest` object.
@@ -193,6 +194,7 @@ mod tests {
             vsock_override: None,
             clock_realtime: false,
             shared: false,
+            uffd_base_file: None,
         };
         let mut parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
         assert!(
@@ -226,6 +228,7 @@ mod tests {
             vsock_override: None,
             clock_realtime: false,
             shared: false,
+            uffd_base_file: None,
         };
         let mut parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
         assert!(
@@ -259,6 +262,7 @@ mod tests {
             vsock_override: None,
             clock_realtime: false,
             shared: false,
+            uffd_base_file: None,
         };
         let mut parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
         assert!(
@@ -301,6 +305,7 @@ mod tests {
             vsock_override: None,
             clock_realtime: false,
             shared: false,
+            uffd_base_file: None,
         };
         let mut parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
         assert!(
@@ -331,6 +336,7 @@ mod tests {
             vsock_override: None,
             clock_realtime: false,
             shared: false,
+            uffd_base_file: None,
         };
         let parsed_request = parse_put_snapshot(&Body::new(body), Some("load")).unwrap();
         assert_eq!(
