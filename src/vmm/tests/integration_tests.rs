@@ -318,6 +318,7 @@ fn verify_load_snapshot(snapshot_file: TempFile, memory_file: TempFile) {
             vsock_override: None,
             clock_realtime: false,
             shared: false,
+            uffd_base_file: None,
         }))
         .unwrap();
 
@@ -405,6 +406,7 @@ fn verify_load_snap_disallowed_after_boot_resources(res: VmmAction, res_name: &s
         vsock_override: None,
         clock_realtime: false,
         shared: false,
+        uffd_base_file: None,
     });
     let err = preboot_api_controller.handle_preboot_request(req);
     assert!(

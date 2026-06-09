@@ -1721,6 +1721,16 @@ definitions:
           memory MAP_SHARED so guest writes flush back to the backing memfile (the
           page-readable source for post-copy live migration). No effect for the UFFD
           backend. Optional; defaults to false (MAP_PRIVATE).
+      uffd_base_file:
+        type: string
+        description:
+          Unified-memory-substrate base backing (engrams ADR 0045 v2b). When set
+          with the Uffd memory backend, guest memory is created as MAP_PRIVATE of
+          this shmem file instead of anonymous, and the UFFD registration uses
+          MISSING|MINOR. The external handler resolves base-identical pages with
+          UFFDIO_CONTINUE (page-cache sharing across same-template microVMs) and
+          divergent pages with UFFDIO_COPY; guest writes COW natively. Invalid
+          with the File backend. Optional.
 
 
   TokenBucket:

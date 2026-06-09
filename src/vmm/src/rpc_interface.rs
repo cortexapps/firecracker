@@ -1341,6 +1341,7 @@ mod tests {
                 vsock_override: None,
                 clock_realtime: false,
                 shared: false,
+                uffd_base_file: None,
             },
         )));
         check_unsupported(runtime_request(VmmAction::SetEntropyDevice(
