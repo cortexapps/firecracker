@@ -170,6 +170,21 @@ pub fn create_snapshot(
     vm_info: &VmInfo,
     params: &CreateSnapshotParams,
 ) -> Result<(), CreateSnapshotError> {
+    // `vmstate_only` skips the memory leg; the msync types ARE memory
+    // flushes, so the combination would write nothing at all — reject it.
+    if params.vmstate_only
+        && matches!(
+            params.snapshot_type,
+            SnapshotType::Msync | SnapshotType::MsyncAndState
+        )
+    {
+        return Err(CreateSnapshotError::MicrovmState(
+            MicrovmStateError::NotAllowed(
+                "vmstate_only cannot combine with the msync snapshot types".into(),
+            ),
+        ));
+    }
+
     // `Msync` is a memory-only off-pause flush: the machine state file is not
     // written (the durable state rides a separate `MsyncAndState`/`Full` capture).
     // Every other type writes the state file as usual.
@@ -181,18 +196,23 @@ pub fn create_snapshot(
         snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
     }
 
-    let kvm_vm = vmm.vm.as_kvm().ok_or_else(|| {
-        CreateSnapshotError::MicrovmState(MicrovmStateError::NotAllowed(
-            "snapshot requires KVM".into(),
-        ))
-    })?;
-    kvm_vm.snapshot_memory_to_file(&params.mem_file_path, params.snapshot_type)?;
+    // engram v3 (ADR 0045 C2): vmstate-only capture for post-copy live
+    // migration — skip the memory leg (and its dirty-queue correction, which
+    // only compensates for the memory dump) entirely.
+    if !params.vmstate_only {
+        let kvm_vm = vmm.vm.as_kvm().ok_or_else(|| {
+            CreateSnapshotError::MicrovmState(MicrovmStateError::NotAllowed(
+                "snapshot requires KVM".into(),
+            ))
+        })?;
+        kvm_vm.snapshot_memory_to_file(&params.mem_file_path, params.snapshot_type)?;
 
-    // We need to mark queues as dirty again for all activated devices. The reason we
-    // do it here is that we don't mark pages as dirty during runtime
-    // for queue objects.
-    vmm.device_manager
-        .mark_virtio_queue_memory_dirty(kvm_vm.guest_memory());
+        // We need to mark queues as dirty again for all activated devices. The reason we
+        // do it here is that we don't mark pages as dirty during runtime
+        // for queue objects.
+        vmm.device_manager
+            .mark_virtio_queue_memory_dirty(kvm_vm.guest_memory());
+    }
 
     Ok(())
 }

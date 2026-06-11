@@ -1628,6 +1628,12 @@ definitions:
           snapshot is created. `Msync` flushes a MAP_SHARED file-backed guest
           memory to its backing memfile via msync(MS_SYNC) without writing the
           machine state; `MsyncAndState` also writes the state file.
+      vmstate_only:
+        type: boolean
+        description:
+          Write only the microVM state file and skip the guest-memory leg
+          entirely (mem_file_path is ignored). Incompatible with the
+          Msync/MsyncAndState snapshot types. Optional and defaults to false.
 
   NetworkOverride:
     type: object
