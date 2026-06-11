@@ -52,6 +52,14 @@ pub struct CreateSnapshotParams {
     pub snapshot_path: PathBuf,
     /// Path to the file that will contain the guest memory.
     pub mem_file_path: PathBuf,
+    /// Write only the microVM state file and skip the guest-memory leg
+    /// entirely (`mem_file_path` is ignored). The post-copy live-migration
+    /// blackout primitive for ADR 0045: the dirty memory never materializes
+    /// as a file — the destination demand-faults it from the paused source's
+    /// address space. Incompatible with the `Msync`/`MsyncAndState` types
+    /// (those ARE memory flushes).
+    #[serde(default)]
+    pub vmstate_only: bool,
 }
 
 /// Allows for changing the mapping between tap devices and host devices

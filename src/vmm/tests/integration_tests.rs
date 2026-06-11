@@ -246,6 +246,7 @@ fn verify_create_snapshot(
         snapshot_type,
         snapshot_path: snapshot_file.as_path().to_path_buf(),
         mem_file_path: memory_file.as_path().to_path_buf(),
+        vmstate_only: false,
     };
 
     controller
@@ -344,6 +345,58 @@ fn test_create_and_load_snapshot() {
             }
         }
     }
+}
+
+#[test]
+fn test_create_snapshot_vmstate_only() {
+    let snapshot_file = TempFile::new().unwrap();
+    let memory_file = TempFile::new().unwrap();
+
+    let (vmm, _) = create_vmm(Some(NOISY_KERNEL_IMAGE), false, true, false, false);
+    let vm_info = VmInfo::from(&*vmm.lock().unwrap());
+    let mut controller = RuntimeApiController::new(vmm.clone());
+    let mut event_manager = EventManager::new().unwrap();
+
+    thread::sleep(Duration::from_millis(200));
+
+    controller
+        .handle_request(VmmAction::Pause, &mut event_manager)
+        .unwrap();
+
+    // The msync types ARE memory flushes — combining them with `vmstate_only`
+    // would write nothing at all and is rejected outright.
+    controller
+        .handle_request(
+            VmmAction::CreateSnapshot(CreateSnapshotParams {
+                snapshot_type: SnapshotType::Msync,
+                snapshot_path: snapshot_file.as_path().to_path_buf(),
+                mem_file_path: memory_file.as_path().to_path_buf(),
+                vmstate_only: true,
+            }),
+            &mut event_manager,
+        )
+        .unwrap_err();
+
+    // vmstate-only writes the state file and never touches the memory path.
+    controller
+        .handle_request(
+            VmmAction::CreateSnapshot(CreateSnapshotParams {
+                snapshot_type: SnapshotType::Full,
+                snapshot_path: snapshot_file.as_path().to_path_buf(),
+                mem_file_path: memory_file.as_path().to_path_buf(),
+                vmstate_only: true,
+            }),
+            &mut event_manager,
+        )
+        .unwrap();
+
+    vmm.lock().unwrap().stop(FcExitCode::Ok);
+
+    let restored_microvm_state: MicrovmState =
+        Snapshot::load(&mut snapshot_file.as_file()).unwrap().data;
+    assert_eq!(restored_microvm_state.vm_info, vm_info);
+    // The memory leg was skipped: the memfile is exactly as we created it.
+    assert_eq!(memory_file.as_file().metadata().unwrap().len(), 0);
 }
 
 #[test]
