@@ -18,13 +18,6 @@ pub enum SnapshotType {
     /// Full snapshot.
     #[default]
     Full,
-    /// Memory-only flush of a `MAP_SHARED` file-backed guest memory to its backing
-    /// memfile via `msync(MS_SYNC)`. No machine state is written. The off-pause
-    /// continuous-flush primitive for ADR 0045 live teleport.
-    Msync,
-    /// Like [`SnapshotType::Msync`], but the machine state file is also written —
-    /// an `msync` memory flush paired with a normal `state` file.
-    MsyncAndState,
 }
 
 /// Specifies the method through which guest memory will get populated when
@@ -56,8 +49,7 @@ pub struct CreateSnapshotParams {
     /// entirely (`mem_file_path` is ignored). The post-copy live-migration
     /// blackout primitive for ADR 0045: the dirty memory never materializes
     /// as a file — the destination demand-faults it from the paused source's
-    /// address space. Incompatible with the `Msync`/`MsyncAndState` types
-    /// (those ARE memory flushes).
+    /// address space.
     #[serde(default)]
     pub vmstate_only: bool,
 }
@@ -100,11 +92,6 @@ pub struct LoadSnapshotParams {
     /// advancing kvmclock by the wall-clock time elapsed since the snapshot was taken. When false
     /// (default), kvmclock resumes from where it was at snapshot time.
     pub clock_realtime: bool,
-    /// When set and the memory is restored from a file (`MemBackendType::File`),
-    /// map the guest memory `MAP_SHARED` so guest writes flush back to the backing
-    /// memfile — the page-readable source for ADR 0045 post-copy. No effect for
-    /// the UFFD backend. Defaults to false (today's `MAP_PRIVATE` behavior).
-    pub shared: bool,
     /// ADR 0045 unified memory substrate (v2b). When set with the Uffd memory
     /// backend, guest memory is created as `MAP_PRIVATE` of this file (a
     /// tmpfs/shmem per-template base) instead of anonymous, and the UFFD
@@ -150,10 +137,6 @@ pub struct LoadSnapshotConfig {
     /// [x86_64 only] When set to true, passes `KVM_CLOCK_REALTIME` to `KVM_SET_CLOCK` on restore.
     #[serde(default)]
     pub clock_realtime: bool,
-    /// Whether to map file-backed guest memory `MAP_SHARED` (ADR 0045 post-copy
-    /// source). Top-level (not inside `mem_backend`). Defaults to false.
-    #[serde(default)]
-    pub shared: bool,
     /// ADR 0045 substrate v2b: back Uffd-restored guest memory `MAP_PRIVATE`
     /// by this shmem base file and register UFFD `MISSING | MINOR`. Top-level
     /// (not inside `mem_backend`, which is `deny_unknown_fields`).
