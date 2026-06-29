@@ -318,7 +318,6 @@ fn verify_load_snapshot(snapshot_file: TempFile, memory_file: TempFile) {
             network_overrides: vec![],
             vsock_override: None,
             clock_realtime: false,
-            shared: false,
             uffd_base_file: None,
         }))
         .unwrap();
@@ -362,20 +361,6 @@ fn test_create_snapshot_vmstate_only() {
     controller
         .handle_request(VmmAction::Pause, &mut event_manager)
         .unwrap();
-
-    // The msync types ARE memory flushes — combining them with `vmstate_only`
-    // would write nothing at all and is rejected outright.
-    controller
-        .handle_request(
-            VmmAction::CreateSnapshot(CreateSnapshotParams {
-                snapshot_type: SnapshotType::Msync,
-                snapshot_path: snapshot_file.as_path().to_path_buf(),
-                mem_file_path: memory_file.as_path().to_path_buf(),
-                vmstate_only: true,
-            }),
-            &mut event_manager,
-        )
-        .unwrap_err();
 
     // vmstate-only writes the state file and never touches the memory path.
     controller
@@ -458,7 +443,6 @@ fn verify_load_snap_disallowed_after_boot_resources(res: VmmAction, res_name: &s
         network_overrides: vec![],
         vsock_override: None,
         clock_realtime: false,
-        shared: false,
         uffd_base_file: None,
     });
     let err = preboot_api_controller.handle_preboot_request(req);

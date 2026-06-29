@@ -575,17 +575,6 @@ impl KvmVm {
     ) -> Result<(), CreateSnapshotError> {
         use self::CreateSnapshotError::*;
 
-        // `Msync`/`MsyncAndState`: the guest memory is mmap'd `MAP_SHARED` on its
-        // own backing memfile, so "saving" memory is an in-place `msync(MS_SYNC)`
-        // of the regions — not a dump to a separate `mem_file_path` (unused here).
-        if matches!(
-            snapshot_type,
-            SnapshotType::Msync | SnapshotType::MsyncAndState
-        ) {
-            self.guest_memory().msync()?;
-            return Ok(());
-        }
-
         // Need to check this here, as we create the file in the line below
         let file_existed = mem_file_path.exists();
 
@@ -633,8 +622,6 @@ impl KvmVm {
                 self.reset_dirty_bitmap();
                 self.guest_memory().reset_dirty();
             }
-            // Handled by the early return above (in-place `msync`, no file dump).
-            SnapshotType::Msync | SnapshotType::MsyncAndState => unreachable!(),
         };
 
         file.flush()

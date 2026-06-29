@@ -34,9 +34,7 @@ use crate::utils::u64_to_usize;
 use crate::vmm_config::boot_source::BootSourceConfig;
 use crate::vmm_config::instance_info::InstanceInfo;
 use crate::vmm_config::machine_config::{HugePageConfig, MachineConfigError, MachineConfigUpdate};
-use crate::vmm_config::snapshot::{
-    CreateSnapshotParams, LoadSnapshotParams, MemBackendType, SnapshotType,
-};
+use crate::vmm_config::snapshot::{CreateSnapshotParams, LoadSnapshotParams, MemBackendType};
 use crate::vstate::kvm::KvmState;
 use crate::vstate::memory::{
     self, GuestMemoryState, GuestRegionMmap, GuestRegionType, MemoryError,
@@ -170,31 +168,11 @@ pub fn create_snapshot(
     vm_info: &VmInfo,
     params: &CreateSnapshotParams,
 ) -> Result<(), CreateSnapshotError> {
-    // `vmstate_only` skips the memory leg; the msync types ARE memory
-    // flushes, so the combination would write nothing at all — reject it.
-    if params.vmstate_only
-        && matches!(
-            params.snapshot_type,
-            SnapshotType::Msync | SnapshotType::MsyncAndState
-        )
-    {
-        return Err(CreateSnapshotError::MicrovmState(
-            MicrovmStateError::NotAllowed(
-                "vmstate_only cannot combine with the msync snapshot types".into(),
-            ),
-        ));
-    }
+    let microvm_state = vmm
+        .save_state(vm_info)
+        .map_err(CreateSnapshotError::MicrovmState)?;
 
-    // `Msync` is a memory-only off-pause flush: the machine state file is not
-    // written (the durable state rides a separate `MsyncAndState`/`Full` capture).
-    // Every other type writes the state file as usual.
-    if params.snapshot_type != SnapshotType::Msync {
-        let microvm_state = vmm
-            .save_state(vm_info)
-            .map_err(CreateSnapshotError::MicrovmState)?;
-
-        snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
-    }
+    snapshot_state_to_file(&microvm_state, &params.snapshot_path)?;
 
     // engram v3 (ADR 0045 C2): vmstate-only capture for post-copy live
     // migration — skip the memory leg (and its dirty-queue correction, which
@@ -482,7 +460,7 @@ pub fn restore_from_snapshot(
                 .into());
             }
             (
-                guest_memory_from_file(mem_backend_path, mem_state, track_dirty_pages, params.shared)
+                guest_memory_from_file(mem_backend_path, mem_state, track_dirty_pages)
                     .map_err(RestoreFromSnapshotGuestMemoryError::File)?,
                 None,
             )
@@ -546,16 +524,9 @@ fn guest_memory_from_file(
     mem_file_path: &Path,
     mem_state: &GuestMemoryState,
     track_dirty_pages: bool,
-    shared: bool,
 ) -> Result<Vec<GuestRegionMmap>, GuestMemoryFromFileError> {
-    // A `MAP_SHARED` mapping that flushes guest writes back needs the fd opened
-    // for writing; the default `MAP_PRIVATE` restore only reads.
-    let mem_file = OpenOptions::new()
-        .read(true)
-        .write(shared)
-        .open(mem_file_path)?;
-    let guest_mem =
-        memory::snapshot_file(mem_file, mem_state.regions(), track_dirty_pages, shared)?;
+    let mem_file = File::open(mem_file_path)?;
+    let guest_mem = memory::snapshot_file(mem_file, mem_state.regions(), track_dirty_pages)?;
     Ok(guest_mem)
 }
 
@@ -641,7 +612,7 @@ fn create_guest_memory(
                 return Err(GuestMemoryFromUffdError::BaseFileHugetlbfs);
             }
             let file = std::fs::File::open(path).map_err(GuestMemoryFromUffdError::OpenBaseFile)?;
-            memory::snapshot_file(file, mem_state.regions(), track_dirty_pages, /* shared */ false)
+            memory::snapshot_file(file, mem_state.regions(), track_dirty_pages)
                 .map_err(GuestMemoryFromUffdError::BaseFileMap)?
         }
         None => memory::anonymous(mem_state.regions(), track_dirty_pages, huge_pages)?,
