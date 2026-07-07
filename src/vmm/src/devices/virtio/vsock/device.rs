@@ -403,9 +403,23 @@ where
     }
 
     fn kick(&mut self) {
-        if self.is_activated() {
-            self.pending_event_ack = true;
-
+        // `kick()` runs on EVERY vm resume (`Vmm::resume_vm` -> `kick_virtio_devices`),
+        // which covers three distinct paths:
+        //  - snapshot-restore resume: the source's `prepare_save` queued a
+        //    `TRANSPORT_RESET_EVENT` into the (snapshotted) used ring, and `restore()`
+        //    re-armed `pending_event_ack` from the saved activation flag;
+        //  - post-snapshot source resume (diff checkpoints): `prepare_save` queued the
+        //    reset and armed the gate in this very process;
+        //  - PLAIN pause->resume (no snapshot anywhere): nothing was queued and nothing
+        //    must be signaled.
+        // Arming the gate *here* used to break the third path: with no reset queued
+        // there is nothing for the guest to ack, so the gate never cleared — all
+        // host->guest RX black-holed and the event loop busy-spun on the undeliverable
+        // backend backlog (the ADR 0074 rung-2 parked-paused un-pause wedge). So:
+        // signal only when a reset is genuinely awaiting the guest's ack, and never arm
+        // from here — `prepare_save` (in-process) and `restore()` (cross-snapshot) own
+        // the arming.
+        if self.is_activated() && self.pending_event_ack {
             // Vsock has a complicated protocol that isn't resilient to any packet loss,
             // so for Vsock we don't support connection persistence through snapshot. Any
             // in-flight packets or events are simply lost and Vsock is restored 'empty'.
@@ -618,23 +632,24 @@ mod tests {
     }
 
     #[test]
-    fn test_kick_when_active_arms_pending_event_ack() {
-        // Restore path: kick() is invoked after the snapshot is loaded to re-deliver the
-        // TRANSPORT_RESET interrupt. It must arm the RX gate so the post-restore RX/EVQ
-        // race cannot deliver data ahead of the guest ack.
+    fn test_kick_when_armed_keeps_gate_and_suppresses_rx() {
+        // Restore / post-snapshot-source resume: a TRANSPORT_RESET is awaiting the
+        // guest's ack (`pending_event_ack` was armed by prepare_save or restore()).
+        // kick() must re-signal while KEEPING the gate armed, so the post-restore
+        // RX/EVQ race cannot deliver data ahead of the guest ack.
         let test_ctx = TestContext::new();
         let mut ctx = test_ctx.create_event_handler_context();
         ctx.mock_activate(test_ctx.mem.clone(), test_ctx.interrupt.clone());
 
-        ctx.device.pending_event_ack = false;
+        ctx.device.pending_event_ack = true;
         ctx.device.kick();
 
         assert!(
             ctx.device.pending_event_ack,
-            "kick() on an active device must arm the RX gate"
+            "kick() must keep the RX gate armed while the reset awaits its ack"
         );
 
-        // After kick(), the gate must actually suppress RX delivery.
+        // With the gate armed, RX delivery must stay suppressed.
         ctx.device.backend.set_pending_rx(true);
         let progressed = ctx.device.process_rx().unwrap();
         assert!(!progressed);
@@ -642,15 +657,46 @@ mod tests {
     }
 
     #[test]
-    fn test_kick_replays_tx_notification_only() {
-        // On restore, kick() must replay only the TX data queue (to re-process in-flight
-        // TX and re-arm avail_event). RX is gated by pending_event_ack so it needs no
-        // replay, and the event queue's data eventfd must not be notified -- that is the
-        // guest's TRANSPORT_RESET ack path; the event queue is signaled host->guest.
+    fn test_kick_plain_resume_unarmed_is_a_noop() {
+        // PLAIN pause->resume (no snapshot anywhere): no TRANSPORT_RESET was queued, so
+        // kick() must neither arm the gate nor signal any queue. Arming here is the
+        // ADR 0074 rung-2 wedge: nothing for the guest to ack -> the gate never clears
+        // -> all host->guest RX black-holes and the event loop busy-spins.
         let test_ctx = TestContext::new();
         let mut ctx = test_ctx.create_event_handler_context();
         ctx.mock_activate(test_ctx.mem.clone(), test_ctx.interrupt.clone());
 
+        assert!(!ctx.device.pending_event_ack);
+        ctx.device.kick();
+
+        assert!(
+            !ctx.device.pending_event_ack,
+            "kick() must never arm the RX gate itself"
+        );
+        // No queue eventfd may be signaled on an unarmed kick (non-blocking read
+        // errors when the eventfd has no pending count).
+        ctx.device.queue_events[TXQ_INDEX].read().unwrap_err();
+        ctx.device.queue_events[RXQ_INDEX].read().unwrap_err();
+        ctx.device.queue_events[EVQ_INDEX].read().unwrap_err();
+
+        // And RX must still flow: the un-paused guest's connections are intact.
+        ctx.device.backend.set_pending_rx(true);
+        let progressed = ctx.device.process_rx().unwrap();
+        assert!(progressed, "RX must not be gated after a plain resume");
+    }
+
+    #[test]
+    fn test_kick_replays_tx_notification_only() {
+        // On restore (gate armed), kick() must replay only the TX data queue (to
+        // re-process in-flight TX and re-arm avail_event). RX is gated by
+        // pending_event_ack so it needs no replay, and the event queue's data eventfd
+        // must not be notified -- that is the guest's TRANSPORT_RESET ack path; the
+        // event queue is signaled host->guest.
+        let test_ctx = TestContext::new();
+        let mut ctx = test_ctx.create_event_handler_context();
+        ctx.mock_activate(test_ctx.mem.clone(), test_ctx.interrupt.clone());
+
+        ctx.device.pending_event_ack = true;
         ctx.device.kick();
 
         // TX queue eventfd was replayed for re-processing.

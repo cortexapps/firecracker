@@ -114,6 +114,15 @@ where
         vsock.acked_features = state.virtio_state.acked_features;
         vsock.avail_features = state.virtio_state.avail_features;
         vsock.device_state = DeviceState::Inactive;
+        // Every snapshot of an *activated* vsock device went through `prepare_save`,
+        // which queued a `TRANSPORT_RESET_EVENT` into the (snapshotted) used ring and
+        // armed the RX gate. The gate flag itself is not persisted, so re-arm it from
+        // the saved activation flag: the restore-side `kick()` then re-signals the evq
+        // and RX stays gated until the restored guest acks the reset. (The device is
+        // still `Inactive` here — activation is re-applied later by the device manager
+        // — so this must read the saved flag, not `is_activated()`.) A never-activated
+        // snapshot queued no reset: leave the gate disarmed or RX would gate forever.
+        vsock.pending_event_ack = state.virtio_state.activated;
         Ok(vsock)
     }
 }
@@ -143,6 +152,50 @@ pub(crate) mod tests {
         fn restore(_: Self::ConstructorArgs, state: &Self::State) -> Result<Self, Self::Error> {
             Ok(TestBackend::new())
         }
+    }
+
+    #[test]
+    fn test_restore_arms_rx_gate_iff_snapshot_was_activated() {
+        // An activated snapshot always carries a queued TRANSPORT_RESET (prepare_save
+        // runs on every save), so restore() must re-arm the RX gate for the guest to
+        // ack. A never-activated snapshot queued no reset — arming would gate RX
+        // forever.
+        let ctx = TestContext::new();
+
+        let mut state = VsockState {
+            backend: ctx.device.backend().save(),
+            frontend: ctx.device.save(),
+        };
+
+        // Unactivated snapshot -> gate stays disarmed.
+        assert!(!state.frontend.virtio_state.activated);
+        let restored = Vsock::restore(
+            VsockConstructorArgs {
+                mem: ctx.mem.clone(),
+                backend: TestBackend::new(),
+            },
+            &state.frontend,
+        )
+        .unwrap();
+        assert!(
+            !restored.pending_event_ack,
+            "restore of a never-activated snapshot must not arm the RX gate"
+        );
+
+        // Activated snapshot -> gate re-armed.
+        state.frontend.virtio_state.activated = true;
+        let restored = Vsock::restore(
+            VsockConstructorArgs {
+                mem: ctx.mem.clone(),
+                backend: TestBackend::new(),
+            },
+            &state.frontend,
+        )
+        .unwrap();
+        assert!(
+            restored.pending_event_ack,
+            "restore of an activated snapshot must re-arm the RX gate"
+        );
     }
 
     #[test]
