@@ -149,6 +149,7 @@ mod tests {
             snapshot_path: PathBuf::from("foo"),
             mem_file_path: PathBuf::from("bar"),
             vmstate_only: false,
+            defer_sync: false,
         };
         assert_eq!(
             vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),
@@ -164,6 +165,7 @@ mod tests {
             snapshot_path: PathBuf::from("foo"),
             mem_file_path: PathBuf::from("bar"),
             vmstate_only: false,
+            defer_sync: false,
         };
         assert_eq!(
             vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),
@@ -180,6 +182,25 @@ mod tests {
             snapshot_path: PathBuf::from("foo"),
             mem_file_path: PathBuf::from("bar"),
             vmstate_only: true,
+            defer_sync: false,
+        };
+        assert_eq!(
+            vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),
+            VmmAction::CreateSnapshot(expected_config)
+        );
+
+        let body = r#"{
+            "snapshot_type": "Diff",
+            "snapshot_path": "foo",
+            "mem_file_path": "bar",
+            "defer_sync": true
+        }"#;
+        let expected_config = CreateSnapshotParams {
+            snapshot_type: SnapshotType::Diff,
+            snapshot_path: PathBuf::from("foo"),
+            mem_file_path: PathBuf::from("bar"),
+            vmstate_only: false,
+            defer_sync: true,
         };
         assert_eq!(
             vmm_action_from_request(parse_put_snapshot(&Body::new(body), Some("create")).unwrap()),

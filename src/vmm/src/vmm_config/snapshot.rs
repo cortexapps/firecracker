@@ -52,6 +52,12 @@ pub struct CreateSnapshotParams {
     /// address space.
     #[serde(default)]
     pub vmstate_only: bool,
+    /// Skip the fsync of the state file and the memory file. The files are
+    /// complete in the page cache when the request returns; the caller
+    /// syncs them after it resumes the guest, so the pause does not include
+    /// the write-back.
+    #[serde(default)]
+    pub defer_sync: bool,
 }
 
 /// Allows for changing the mapping between tap devices and host devices

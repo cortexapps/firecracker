@@ -278,6 +278,7 @@ mod tests {
                 snapshot_path: PathBuf::new(),
                 mem_file_path: PathBuf::new(),
                 vmstate_only: false,
+                defer_sync: false,
             })),
             start_time_us,
         );
@@ -292,6 +293,7 @@ mod tests {
                 snapshot_path: PathBuf::new(),
                 mem_file_path: PathBuf::new(),
                 vmstate_only: false,
+                defer_sync: false,
             })),
             start_time_us,
         );

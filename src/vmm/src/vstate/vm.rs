@@ -568,10 +568,14 @@ impl KvmVm {
     /// If `snapshot_type` is [`SnapshotType::Diff`], and `mem_file_path` exists and is a snapshot
     /// file of matching size, then the diff snapshot will be directly merged into the existing
     /// snapshot. Otherwise, existing files are simply overwritten.
+    ///
+    /// With `defer_sync`, the file is not fsynced: the caller syncs it after
+    /// the guest resumes.
     pub(crate) fn snapshot_memory_to_file(
         &self,
         mem_file_path: &Path,
         snapshot_type: SnapshotType,
+        defer_sync: bool,
     ) -> Result<(), CreateSnapshotError> {
         use self::CreateSnapshotError::*;
 
@@ -626,6 +630,9 @@ impl KvmVm {
 
         file.flush()
             .map_err(|err| MemoryBackingFile("flush", err))?;
+        if defer_sync {
+            return Ok(());
+        }
         file.sync_all()
             .map_err(|err| MemoryBackingFile("sync_all", err))
     }

@@ -1241,6 +1241,7 @@ mod tests {
                 snapshot_path: PathBuf::new(),
                 mem_file_path: PathBuf::new(),
                 vmstate_only: false,
+                defer_sync: false,
             },
         )));
         #[cfg(target_arch = "x86_64")]
